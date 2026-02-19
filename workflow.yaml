@@ -7,7 +7,7 @@ nodes:
     name: Apply AST Transformations
     type: automatic
     steps:
-      - name: "Scan rust files and apply fixes"
+      - name: "Convert TSX+Tailwind to GPUI Rust builder code"
         js-ast-grep:
           js_file: scripts/codemod.ts
-          language: "rust"
+          language: "tsx"
