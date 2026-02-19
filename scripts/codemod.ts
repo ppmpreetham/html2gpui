@@ -1,17 +1,36 @@
 import type { Transform } from "codemod:ast-grep"
 import type TSX from "codemod:ast-grep/langs/tsx"
-import { tailwindCSS } from "../tailwind.ts"
+import { tailwindCSS } from "../consts/tailwind.ts"
+import { textSizes } from "../consts/miniclasses.ts"
 
 const TAILWIND_SET = new Set(tailwindCSS)
 const usedTags = new Set<string>()
 
-function classifyToken(token: string): string {
-  const textSizes = ["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl"]
-  const parts = token.split("-")
-  if (token.startsWith("text-") && textSizes.includes(parts[parts.length - 1] ?? "")) {
-    return `.${token.replace(/-/g, "_")}()`
+function transformTailwindToGpui(token: string): string {
+  let result = token
+
+  // (-w-4 -> w_neg_4)
+  if (result.startsWith("-")) {
+    const parts = result.slice(1).split("-")
+    const prefix = parts.shift()
+    result = `${prefix}_neg_${parts.join("_")}`
   }
 
+  return result
+    .replace(/\//g, "_") // 1/2 -> 1_2
+    .replace(/\./g, "p") // 0.5 -> 0p5
+    .replace(/-/g, "_") // rest -> underscores
+}
+
+function classifyToken(token: string): string {
+  const parts = token.split("-")
+
+  // text Sizes
+  if (token.startsWith("text-") && textSizes.includes(parts[parts.length - 1] ?? "")) {
+    return `.${transformTailwindToGpui(token)}()`
+  }
+
+  // colors (bg, text, border)
   const colorMatch = token.match(/^(bg|text|border)-(.*)$/)
   if (colorMatch) {
     const [_, type = "", value = ""] = colorMatch
@@ -24,21 +43,43 @@ function classifyToken(token: string): string {
     if (["white", "black", "transparent"].includes(value)) {
       return `.${method}(${value}())`
     }
-    return `.${method}(gpui::${value.replace(/-/g, "_")}())`
+    // transformation to the color value ( slate-500 -> slate_500)
+    return `.${method}(gpui::${transformTailwindToGpui(value)}())`
   }
 
+  // others (w-[20px])
   const arbMatch = token.match(/^([a-z-]+)-\[(\d+)(?:px)?\]$/)
   if (arbMatch) {
     const [_, prefix = "", num = ""] = arbMatch
-    return `.${prefix.replace(/-/g, "_")}(px(${num}.0))`
+    return `.${transformTailwindToGpui(prefix)}(px(${num}.0))`
   }
 
   if (TAILWIND_SET.has(token)) {
-    return `.${token.replace(/-/g, "_")}()`
+    return `.${transformTailwindToGpui(token)}()`
   }
 
   if (token === "border") return ".border_1()"
   return `/* Unknown: ${token} */`
+}
+
+function getJsxChildren(node: any) {
+  if (node.kind() === "jsx_self_closing_element") return []
+  const children: any[] = []
+  for (const child of node.children() || []) {
+    const k = child.kind()
+    if (
+      [
+        "jsx_text",
+        "jsx_element",
+        "jsx_self_closing_element",
+        "jsx_expression",
+        "jsx_fragment",
+      ].includes(k)
+    ) {
+      children.push(child)
+    }
+  }
+  return children
 }
 
 function extractAttributes(node: any): Record<string, string> {
@@ -109,9 +150,7 @@ function buildIR(node: any): UiNode | null {
 
 function generateRust(node: UiNode, depth: number): string {
   const childIndent = "    ".repeat(depth + 1)
-
   if (node.kind === "text") return `"${node.value ?? ""}"`
-
   if (node.kind === "expression") {
     const val = node.value ?? ""
     if (node.isTemplate) {
@@ -145,7 +184,6 @@ function generateRust(node: UiNode, depth: number): string {
 
 const transform: Transform<TSX> = async (root) => {
   const rootNode = root.root()
-
   const allJsx = rootNode.findAll({
     rule: { pattern: "$JSX" },
     constraints: {
@@ -160,21 +198,16 @@ const transform: Transform<TSX> = async (root) => {
   for (const jsx of allJsx) {
     const parent = jsx.parent()
     const pKind = parent?.kind() || ""
-
-    if (pKind === "jsx_element" || pKind === "jsx_expression") {
-      continue
-    }
+    if (pKind === "jsx_element" || pKind === "jsx_expression") continue
 
     const ir = buildIR(jsx)
     if (ir) {
       const output = generateRust(ir, 1)
-
       jsx.replace(output)
     }
   }
 
   const imports = `use gpui::{${Array.from(usedTags).join(", ")}, rgb, px};\n\n`
-
   return imports + rootNode.text()
 }
 
