@@ -1,0 +1,20 @@
+schema_version: "1.0"
+
+name: "html2gpui"
+version: "0.1.0"
+description: "Transpiles HTML to GPUI"
+author: "Preetham Pemmasai <ppmpreetham1@gmail.com>"
+license: "MIT"
+workflow: "workflow.yaml"
+repository: "https://github.com/ppmpreetham/html2gpui"
+
+targets:
+  languages: ["rust"]
+
+keywords: ["transformation", "migration"]
+
+registry:
+  access: "public"
+  visibility: "public"
+
+capabilities: []

@@ -1,0 +1,14 @@
+{
+  "name": "html2gpui",
+  "version": "0.1.0",
+  "description": "Transpiles HTML to GPUI",
+  "type": "module",
+  "scripts": {
+    "test": "pnpm dlx codemod@latest jssg test -l typescript ./scripts/codemod.ts",
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@codemod.com/jssg-types": "latest",
+    "typescript": "latest"
+  }
+}
