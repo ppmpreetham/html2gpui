@@ -1,6 +1,6 @@
 schema_version: "1.0"
 
-name: "html2gpui"
+name: "ppmpreetham/html2gpui"
 version: "0.1.0"
 description: "Transpiles HTML to GPUI"
 author: "Preetham Pemmasai <ppmpreetham1@gmail.com>"
