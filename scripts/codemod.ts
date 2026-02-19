@@ -1,72 +1,38 @@
-import type { Transform } from "codemod:ast-grep";
-import type Rust from "codemod:ast-grep/langs/rust";
+import type { Transform } from "codemod:ast-grep"
+import type TSX from "codemod:ast-grep/langs/tsx"
 
-const transform: Transform<Rust> = async (root) => {
-  const rootNode = root.root();
+const transform: Transform<TSX> = async (root) => {
+  const rootNode = root.root()
 
-  // Find all println! macro calls
   const nodes = rootNode.findAll({
     rule: {
-      pattern: "println!($$$ARGS)",
+      pattern: "<$TAG className=$CLASS $$$*>$CONTENT</$TAG>",
     },
-  });
+  })
 
-  if (nodes.length === 0) {
-    return rootNode.text(); // No changes needed
-  }
+  if (nodes.length === 0) return rootNode.text()
 
-  // Check if log::info is already imported
-  const hasLogImport = rootNode.find({
-    rule: {
-      any: [
-        { pattern: "use log::info;" },
-        { pattern: "use log::*;" },
-        { pattern: "use log::{$$$, info, $$$};" },
-      ],
-    },
-  });
+  const edits: any = []
 
-  const edits = [];
-
-  // Add import if not present
-  if (!hasLogImport) {
-    // Find the best place to insert the import
-    const firstUseStatement = rootNode.find({
-      rule: { pattern: "use $$$;" },
-    });
-
-    if (firstUseStatement) {
-      // Insert before the first use statement
-      edits.push(
-        firstUseStatement.replace(`use log::info;
-${firstUseStatement.text()}`),
-      );
-    } else {
-      // No existing imports, add at the beginning of the file
-      const firstItem = rootNode.children()[0];
-      if (firstItem) {
-        edits.push(
-          firstItem.replace(`use log::info;
-
-${firstItem.text()}`),
-        );
-      }
-    }
-  }
-
-  // Transform all println! calls
   nodes.forEach((node) => {
-    const args =
-      node
-        .getMultipleMatches("ARGS")
-        .map((x) => x.text())
-        .filter((x) => x !== ",")
-        .join(", ") || "";
-    edits.push(node.replace(`log::info!(${args})`));
-  });
+    // const tag = node.getMatch("TAG")?.text() || "div"
+    const tag = "div"
+    const content = node.getMatch("CONTENT")?.text().trim() || ""
 
-  const newSource = rootNode.commitEdits(edits);
-  return newSource;
-};
+    const rawClass = node.getMatch("CLASS")?.text().replace(/['"]/g, "") || ""
+    const gpuiMethods = rawClass
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((cls) => `.${cls.replace(/-/g, "_")}()`)
+      .join("")
 
-export default transform;
+    const rustSnippet = `${tag}()${gpuiMethods}.child("${content}")`
+
+    edits.push(node.replace(rustSnippet))
+  })
+
+  const newSource = rootNode.commitEdits(edits)
+  return newSource
+}
+
+export default transform
