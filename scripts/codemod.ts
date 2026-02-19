@@ -1,108 +1,174 @@
 import type { Transform } from "codemod:ast-grep"
 import type TSX from "codemod:ast-grep/langs/tsx"
-import { tailwindCSS } from "../consts/tailwind.ts"
-import { textSizes } from "../consts/miniclasses.ts"
+import {
+  COLORS,
+  ATTR_METHOD_MAP,
+  TAG_DEFAULT_STYLES,
+  VALID_TEXT_SIZES,
+} from "../consts/compatibleclasses.ts"
 
-const TAILWIND_SET = new Set(tailwindCSS)
+let autoIdCounter = 0
 const usedTags = new Set<string>()
 
-function transformTailwindToGpui(token: string): string {
-  let result = token
+function nextAutoId(tag: string): string {
+  return `__rsx_${tag}_${autoIdCounter++}`
+}
 
-  // (-w-4 -> w_neg_4)
+function isStatefulAttr(name: string): boolean {
+  if (
+    name.startsWith("on_") ||
+    (name.startsWith("on") && name.length >= 3 && name[2] === name[2]?.toUpperCase())
+  ) {
+    return true
+  }
+  return ["hover", "active", "focus", "tooltip", "group", "track_focus"].includes(name)
+}
+
+function parseSingleClass(cls: string): string {
+  const arbMatch = cls.match(/^([a-zA-Z0-9-]+)-\[([^\]]+)\]$/)
+  if (arbMatch) {
+    const prefix = (arbMatch[1] || "").replace(/-/g, "_")
+    const val = arbMatch[2] || ""
+
+    if (val.startsWith("#")) {
+      let hex = val.slice(1)
+      if (hex.length === 3)
+        hex = hex
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      const method =
+        prefix === "text"
+          ? "text_color"
+          : prefix === "bg"
+            ? "bg"
+            : prefix === "border"
+              ? "border_color"
+              : prefix
+      return `.${method}(rgb(0x${hex.toUpperCase()}))`
+    }
+
+    if (val.endsWith("px")) {
+      const num = val.slice(0, -2)
+      const numStr = num.includes(".") ? num : `${num}.0`
+      return `.${prefix}(px(${numStr}))`
+    }
+  }
+
+  if (cls === "border") return ".border_1()"
+
+  const colorMatch = cls.match(/^(bg|text|border|border-[trblxy])-([a-zA-Z0-9-]+)$/)
+  if (colorMatch) {
+    const type = colorMatch[1] || ""
+    const value = colorMatch[2] || ""
+    const method =
+      type === "text"
+        ? "text_color"
+        : type === "bg"
+          ? "bg"
+          : type === "border"
+            ? "border_color"
+            : type.replace(/-/g, "_")
+    const colorKey = value.replace(/-/g, "_")
+
+    if (COLORS[colorKey]) {
+      return `.${method}(rgb(0x${COLORS[colorKey].toUpperCase()}))`
+    }
+    if (["white", "black", "transparent", "red", "green", "blue", "yellow"].includes(colorKey)) {
+      return `.${method}(gpui::${colorKey}())`
+    }
+  }
+
+  // (-w-4 -> w_neg_4, w-1/2 -> w_1_2, w-0.5 -> w_0p5, etc)
+  let result = cls
   if (result.startsWith("-")) {
     const parts = result.slice(1).split("-")
-    const prefix = parts.shift()
+    const prefix = parts.shift() || ""
     result = `${prefix}_neg_${parts.join("_")}`
   }
 
-  return result
-    .replace(/\//g, "_") // 1/2 -> 1_2
-    .replace(/\./g, "p") // 0.5 -> 0p5
-    .replace(/-/g, "_") // rest -> underscores
-}
+  result = result.replace(/\//g, "_").replace(/\./g, "p").replace(/-/g, "_")
 
-function classifyToken(token: string): string {
-  const parts = token.split("-")
-
-  // text Sizes
-  if (token.startsWith("text-") && textSizes.includes(parts[parts.length - 1] ?? "")) {
-    return `.${transformTailwindToGpui(token)}()`
-  }
-
-  // colors (bg, text, border)
-  const colorMatch = token.match(/^(bg|text|border)-(.*)$/)
-  if (colorMatch) {
-    const [_, type = "", value = ""] = colorMatch
-    const method = type === "text" ? "text_color" : type === "bg" ? "bg" : "border_color"
-
-    if (value.startsWith("[#") && value.endsWith("]")) {
-      const hex = value.slice(2, -1).toUpperCase()
-      return `.${method}(rgb(0x${hex}))`
-    }
-    if (["white", "black", "transparent"].includes(value)) {
-      return `.${method}(${value}())`
-    }
-    // transformation to the color value ( slate-500 -> slate_500)
-    return `.${method}(gpui::${transformTailwindToGpui(value)}())`
-  }
-
-  // others (w-[20px])
-  const arbMatch = token.match(/^([a-z-]+)-\[(\d+)(?:px)?\]$/)
-  if (arbMatch) {
-    const [_, prefix = "", num = ""] = arbMatch
-    return `.${transformTailwindToGpui(prefix)}(px(${num}.0))`
-  }
-
-  if (TAILWIND_SET.has(token)) {
-    return `.${transformTailwindToGpui(token)}()`
-  }
-
-  if (token === "border") return ".border_1()"
-  return `// Unknown: ${token}`
-}
-
-function getJsxChildren(node: any) {
-  if (node.kind() === "jsx_self_closing_element") return []
-  const children: any[] = []
-  for (const child of node.children() || []) {
-    const k = child.kind()
-    if (
-      [
-        "jsx_text",
-        "jsx_element",
-        "jsx_self_closing_element",
-        "jsx_expression",
-        "jsx_fragment",
-      ].includes(k)
-    ) {
-      children.push(child)
+  if (result.startsWith("text_")) {
+    const size = result.slice(5)
+    if (VALID_TEXT_SIZES.includes(size) || size.match(/^[1-9]xl$/)) {
+      return `.${result}()`
     }
   }
-  return children
+
+  return `.${result}()`
 }
 
-function extractAttributes(node: any): Record<string, string> {
-  const attrs: Record<string, string> = {}
-  const found = node.findAll({ rule: { kind: "jsx_attribute" } })
-  for (const attr of found) {
-    const nameNode = attr.child(0)
-    const valueNode = attr.child(2)
-    if (nameNode && valueNode) {
-      const val = valueNode.text().replace(/^["'{`]|["'}`]$/g, "")
-      attrs[nameNode.text()] = val
-    }
-  }
-  return attrs
-}
+type AttributeValue =
+  | { type: "flag" }
+  | { type: "string"; value: string }
+  | { type: "expression"; value: string }
+  | { type: "tuple"; first: string; second: string }
 
 interface UiNode {
   kind: "element" | "text" | "expression"
   tag?: string
-  styles?: string[]
+  attributes?: Record<string, AttributeValue>
+  classes?: string[]
   value?: string
   isTemplate?: boolean
   children?: UiNode[]
+}
+
+function getTag(node: any): string {
+  const target = node.kind() === "jsx_element" ? node.child(0) : node
+  for (const child of target.children() || []) {
+    if (child.kind() === "identifier" || child.kind() === "nested_identifier") {
+      return child.text()
+    }
+  }
+  return "div"
+}
+
+function extractAttributes(node: any): Record<string, AttributeValue> {
+  const attrs: Record<string, AttributeValue> = {}
+
+  const targetNode = node.kind() === "jsx_element" ? node.child(0) : node
+  if (!targetNode || targetNode.kind() === "jsx_fragment") return attrs
+
+  for (const attr of targetNode.children() || []) {
+    if (attr.kind() === "jsx_attribute") {
+      const nameNode = attr.child(0)
+      if (!nameNode) continue
+      const name = nameNode.text()
+      const valueNode = attr.child(2)
+
+      if (!valueNode) {
+        attrs[name] = { type: "flag" }
+      } else if (valueNode.kind() === "jsx_expression") {
+        const exprStr = valueNode
+          .text()
+          .replace(/^\{|\}$/g, "")
+          .trim()
+
+        if (
+          (name === "when" || name === "whenSome") &&
+          exprStr.startsWith("(") &&
+          exprStr.endsWith(")")
+        ) {
+          const tupleBody = exprStr.slice(1, -1)
+          const commaIdx = tupleBody.indexOf(",")
+          if (commaIdx !== -1) {
+            attrs[name] = {
+              type: "tuple",
+              first: tupleBody.slice(0, commaIdx).trim(),
+              second: tupleBody.slice(commaIdx + 1).trim(),
+            }
+            continue
+          }
+        }
+        attrs[name] = { type: "expression", value: exprStr }
+      } else {
+        attrs[name] = { type: "string", value: valueNode.text().replace(/^["'{`]|["'}`]$/g, "") }
+      }
+    }
+  }
+  return attrs
 }
 
 function buildIR(node: any): UiNode | null {
@@ -110,25 +176,60 @@ function buildIR(node: any): UiNode | null {
 
   if (k === "jsx_element" || k === "jsx_self_closing_element") {
     const attrs = extractAttributes(node)
-    const rawClass = attrs["className"] || attrs["class"] || ""
-    const styles = rawClass.split(/\s+/).filter(Boolean).map(classifyToken)
 
-    const tag =
-      node
-        .child(0)
-        ?.findAll({ rule: { kind: "identifier" } })[0]
-        ?.text() || "div"
+    const rawClassAttr = attrs["className"] || attrs["class"]
+    const classes: string[] = []
+    if (rawClassAttr && rawClassAttr.type === "string") {
+      classes.push(...rawClassAttr.value.split(/\s+/).filter(Boolean))
+    }
+    delete attrs["className"]
+    delete attrs["class"]
+
+    let tag = getTag(node)
+    const originalTag = tag
+
+    const htmlTags = [
+      "div",
+      "span",
+      "section",
+      "article",
+      "header",
+      "footer",
+      "main",
+      "nav",
+      "aside",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "p",
+      "label",
+      "a",
+      "button",
+      "input",
+      "textarea",
+      "select",
+      "form",
+      "ul",
+      "ol",
+      "li",
+    ]
+    if (htmlTags.includes(tag)) tag = "div"
     usedTags.add(tag)
 
     const children: UiNode[] = []
     if (k === "jsx_element") {
+      // ignore opening & closing tags
       const body = node.children().slice(1, -1)
       for (const child of body) {
         const built = buildIR(child)
         if (built) children.push(built)
       }
     }
-    return { kind: "element", tag, styles, children }
+
+    return { kind: "element", tag, attributes: attrs, classes, children, value: originalTag }
   }
 
   if (k === "jsx_text") {
@@ -150,7 +251,9 @@ function buildIR(node: any): UiNode | null {
 
 function generateRust(node: UiNode, depth: number): string {
   const childIndent = "    ".repeat(depth + 1)
+
   if (node.kind === "text") return `"${node.value ?? ""}"`
+
   if (node.kind === "expression") {
     const val = node.value ?? ""
     if (node.isTemplate) {
@@ -171,35 +274,131 @@ function generateRust(node: UiNode, depth: number): string {
     return val
   }
 
-  const tag = `${node.tag ?? "div"}()`
-  const styles = node.styles ?? []
-  const styleChain = styles.length > 0 ? styles.join(`\n${childIndent}`) : ""
-  let rust = styleChain ? `${tag}\n${childIndent}${styleChain}` : tag
+  const tag = node.tag ?? "div"
+  const attrs = node.attributes ?? {}
+  const classes = node.classes ?? []
+  const originalTag = node.value ?? tag
 
-  for (const child of node.children ?? []) {
-    rust += `\n${childIndent}.child(${generateRust(child, depth + 1)})`
+  let userId = null
+  let hasStyled = false
+  let needsId = false
+
+  for (const [name, attr] of Object.entries(attrs)) {
+    if (name === "id" && attr.type === "string") {
+      userId = `"${attr.value}"`
+    } else if (name === "id" && attr.type === "expression") {
+      userId = attr.value
+    } else if (name === "styled" && attr.type === "flag") {
+      hasStyled = true
+    } else {
+      if (!needsId) {
+        needsId = isStatefulAttr(ATTR_METHOD_MAP[name] || name)
+      }
+    }
   }
-  return rust
+
+  let rustCode = `${tag}()`
+  if (userId) {
+    rustCode += `.id(${userId})`
+  } else if (needsId) {
+    rustCode += `.id("${nextAutoId(originalTag)}")`
+  }
+
+  const methods: string[] = []
+
+  if (hasStyled && TAG_DEFAULT_STYLES[originalTag]) {
+    const defaultClasses = TAG_DEFAULT_STYLES[originalTag].split(" ")
+    methods.push(...defaultClasses.map(parseSingleClass))
+  }
+
+  methods.push(...classes.map(parseSingleClass))
+
+  for (const [name, attr] of Object.entries(attrs)) {
+    if (name === "id" || name === "styled") continue
+
+    if (name === "invisible" && attr.type === "flag") {
+      methods.push(".visible(false)")
+      continue
+    }
+
+    if (name === "when" || name === "whenSome") {
+      if (attr.type === "tuple") {
+        const method = name === "whenSome" ? "when_some" : "when"
+        methods.push(`.${method}(${attr.first}, ${attr.second})`)
+      }
+      continue
+    }
+
+    const mappedName = ATTR_METHOD_MAP[name] || name
+
+    if (attr.type === "flag") {
+      methods.push(`.${mappedName}()`)
+    } else if (attr.type === "string") {
+      methods.push(`.${mappedName}("${attr.value}")`)
+    } else if (attr.type === "expression") {
+      methods.push(`.${mappedName}(${attr.value})`)
+    }
+  }
+
+  if (methods.length > 0) {
+    rustCode += `\n${childIndent}${methods.join(`\n${childIndent}`)}`
+  }
+
+  const children = node.children ?? []
+  let i = 0
+
+  while (i < children.length) {
+    const consecutiveExprs: string[] = []
+
+    while (i < children.length) {
+      const node = children[i]
+      if (!node) break
+
+      if (node.kind === "expression" || node.kind === "text") {
+        consecutiveExprs.push(generateRust(node, depth))
+        i++
+      } else {
+        break
+      }
+    }
+
+    if (consecutiveExprs.length >= 2) {
+      rustCode += `\n${childIndent}.children([${consecutiveExprs.join(", ")}])`
+    } else {
+      for (const expr of consecutiveExprs) {
+        rustCode += `\n${childIndent}.child(${expr})`
+      }
+    }
+
+    if (i < children.length) {
+      const node = children[i]
+      if (node) {
+        rustCode += `\n${childIndent}.child(${generateRust(node, depth + 1)})`
+        i++
+      }
+    }
+  }
+
+  return rustCode
 }
 
 const transform: Transform<TSX> = async (root) => {
   const rootNode = root.root()
+
   const allJsx = rootNode.findAll({
-    rule: { pattern: "$JSX" },
-    constraints: {
-      JSX: {
-        any: [{ kind: "jsx_element" }, { kind: "jsx_self_closing_element" }],
-      },
+    rule: {
+      any: [{ kind: "jsx_element" }, { kind: "jsx_self_closing_element" }],
     },
   })
 
+  autoIdCounter = 0
   usedTags.clear()
   const edits: any[] = []
 
   for (const jsx of allJsx) {
-    const parent = jsx.parent()
-    const pKind = parent?.kind() || ""
-    if (pKind === "jsx_element" || pKind === "jsx_expression") continue
+    const pKind = jsx.parent()?.kind() || ""
+
+    if (["jsx_element", "jsx_expression"].includes(pKind)) continue
 
     const ir = buildIR(jsx)
     if (ir) {
@@ -207,8 +406,10 @@ const transform: Transform<TSX> = async (root) => {
       edits.push(jsx.replace(output))
     }
   }
+
   const newCode = rootNode.commitEdits(edits)
   const imports = `use gpui::{${Array.from(usedTags).join(", ")}, rgb, px};\n\n`
+
   if (newCode.startsWith("// @ts-nocheck\n")) {
     return "// @ts-nocheck\n" + imports + newCode.substring("// @ts-nocheck\n".length)
   }
