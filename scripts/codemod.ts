@@ -59,7 +59,7 @@ function classifyToken(token: string): string {
   }
 
   if (token === "border") return ".border_1()"
-  return `/* Unknown: ${token} */`
+  return `// Unknown: ${token}`
 }
 
 function getJsxChildren(node: any) {
@@ -194,6 +194,7 @@ const transform: Transform<TSX> = async (root) => {
   })
 
   usedTags.clear()
+  const edits: any[] = []
 
   for (const jsx of allJsx) {
     const parent = jsx.parent()
@@ -203,12 +204,16 @@ const transform: Transform<TSX> = async (root) => {
     const ir = buildIR(jsx)
     if (ir) {
       const output = generateRust(ir, 1)
-      jsx.replace(output)
+      edits.push(jsx.replace(output))
     }
   }
-
+  const newCode = rootNode.commitEdits(edits)
   const imports = `use gpui::{${Array.from(usedTags).join(", ")}, rgb, px};\n\n`
-  return imports + rootNode.text()
+  if (newCode.startsWith("// @ts-nocheck\n")) {
+    return "// @ts-nocheck\n" + imports + newCode.substring("// @ts-nocheck\n".length)
+  }
+
+  return imports + newCode
 }
 
 export default transform
